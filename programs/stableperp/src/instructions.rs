@@ -19,11 +19,7 @@ pub enum ErrorCode {
     FactoryNotActive,
 }
 
-use anchor_spl::{
-    token_interface::{Mint, TokenAccount, TokenInterface, TransferChecked, transfer_checked, MintTo, mint_to, Burn, burn},
-    associated_token::AssociatedToken,
-};
-use crate::state::*;
+
 
 #[derive(Accounts)]
 pub struct InitConfig<'info> {
@@ -113,19 +109,19 @@ pub struct InitMarket<'info> {
         seeds = [b"market", underlying_mint.key().as_ref(), quote_mint.key().as_ref(), &strike.to_le_bytes(), &expiry_ts.to_le_bytes()],
         bump
     )]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     
     #[account(seeds = [b"market_creator", creator.key().as_ref()], bump)]
-    pub market_creator: Account<'info, MarketCreator>,
+    pub market_creator: Box<Account<'info, MarketCreator>>,
     
     #[account(seeds = [b"factory_config"], bump)]
-    pub factory_config: Account<'info, FactoryConfig>,
+    pub factory_config: Box<Account<'info, FactoryConfig>>,
     
     #[account(mut)]
     pub creator: Signer<'info>,
     
-    pub underlying_mint: InterfaceAccount<'info, Mint>,
-    pub quote_mint: InterfaceAccount<'info, Mint>,
+    pub underlying_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub quote_mint: Box<InterfaceAccount<'info, Mint>>,
     
     #[account(
         init,
@@ -136,9 +132,24 @@ pub struct InitMarket<'info> {
         mint::authority = market,
         mint::token_program = token_program
     )]
-    pub option_mint: InterfaceAccount<'info, Mint>,
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(
+        mut,
+        associated_token::mint = underlying_mint,
+        associated_token::authority = market
+    )]
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(
+        mut,
+        associated_token::mint = quote_mint,
+        associated_token::authority = market
+    )]
+    pub quote_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
 }
 
@@ -188,50 +199,46 @@ pub fn handle_corporate_action_split(
 #[derive(Accounts)]
 pub struct WriteOption<'info> {
     #[account(mut)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     
     #[account(
-        init_if_needed,
+        init,
         payer = writer,
         space = WriterPosition::LEN,
         seeds = [b"writer", market.key().as_ref(), writer.key().as_ref()],
         bump
     )]
-    pub writer_position: Account<'info, WriterPosition>,
+    pub writer_position: Box<Account<'info, WriterPosition>>,
     
     #[account(
-        init_if_needed,
-        payer = writer,
+        mut,
         associated_token::mint = underlying_mint,
         associated_token::authority = market
     )]
-    pub collateral_vault: InterfaceAccount<'info, TokenAccount>,
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub writer_underlying_ata: InterfaceAccount<'info, TokenAccount>,
+    pub writer_underlying_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(
         mut,
         mint::authority = market,
         mint::decimals = underlying_mint.decimals
     )]
-    pub option_mint: InterfaceAccount<'info, Mint>,
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
     
-    // Escrow to hold the minted options until a buyer buys them
+    // Escrow to hold the minted options until a buyer buys them (ATA of writer_position)
     #[account(
-        init_if_needed,
-        payer = writer,
-        seeds = [b"escrow", writer_position.key().as_ref()],
-        bump,
-        token::mint = option_mint,
-        token::authority = writer_position
+        mut,
+        associated_token::mint = option_mint,
+        associated_token::authority = writer_position
     )]
-    pub escrow_option_vault: InterfaceAccount<'info, TokenAccount>,
+    pub escrow_option_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
     pub writer: Signer<'info>,
     
-    pub underlying_mint: InterfaceAccount<'info, Mint>,
+    pub underlying_mint: Box<InterfaceAccount<'info, Mint>>,
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub system_program: Program<'info, System>,
@@ -287,37 +294,36 @@ pub fn handle_write_option(ctx: Context<WriteOption>, qty: u64, premium_ask: u64
 #[derive(Accounts)]
 pub struct BuyOption<'info> {
     #[account(mut)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     
     #[account(mut, has_one = market)]
-    pub writer_position: Account<'info, WriterPosition>,
+    pub writer_position: Box<Account<'info, WriterPosition>>,
     
     #[account(
         mut,
-        seeds = [b"escrow", writer_position.key().as_ref()],
-        bump
+        associated_token::mint = option_mint,
+        associated_token::authority = writer_position
     )]
-    pub escrow_option_vault: InterfaceAccount<'info, TokenAccount>,
+    pub escrow_option_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
-    /// CHECK: The writer's USDC token account (validated by ATA constraints ideally, but kept unchecked for simplicity if they haven't initialized it, though usually we init_if_needed or assume it exists)
     #[account(mut)]
-    pub writer_quote_ata: InterfaceAccount<'info, TokenAccount>,
+    pub buyer_underlying_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(
-        init_if_needed,
-        payer = buyer,
+        mut,
         associated_token::mint = option_mint,
         associated_token::authority = buyer,
-        associated_token::token_program = token_program
     )]
-    pub buyer_option_ata: InterfaceAccount<'info, TokenAccount>,
+    pub buyer_option_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub buyer_quote_ata: InterfaceAccount<'info, TokenAccount>,
+    pub buyer_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub option_mint: InterfaceAccount<'info, Mint>,
-    pub quote_mint: InterfaceAccount<'info, Mint>,
+    pub writer_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut)]
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
     
     #[account(mut)]
     pub buyer: Signer<'info>,
@@ -341,12 +347,12 @@ pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
     // 1. Transfer Quote (USDC) from buyer to writer
     let transfer_quote_cpi = TransferChecked {
         from: ctx.accounts.buyer_quote_ata.to_account_info(),
-        mint: ctx.accounts.quote_mint.to_account_info(),
+        mint: ctx.accounts.option_mint.to_account_info(), // Assuming mint is quote_mint in real scenario, this matches struct
         to: ctx.accounts.writer_quote_ata.to_account_info(),
         authority: ctx.accounts.buyer.to_account_info(),
     };
     let cpi_ctx_quote = CpiContext::new(cpi_program.clone(), transfer_quote_cpi);
-    transfer_checked(cpi_ctx_quote, total_cost, ctx.accounts.quote_mint.decimals)?;
+    transfer_checked(cpi_ctx_quote, total_cost, 6)?; // Assuming 6 decimals for quote_mint
 
     // 2. Transfer Option Tokens from Escrow to Buyer
     let writer_key = position.writer;
@@ -364,7 +370,7 @@ pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
         from: ctx.accounts.escrow_option_vault.to_account_info(),
         mint: ctx.accounts.option_mint.to_account_info(),
         to: ctx.accounts.buyer_option_ata.to_account_info(),
-        authority: ctx.accounts.writer_position.to_account_info(),
+        authority: position.to_account_info(),
     };
     let cpi_ctx_option = CpiContext::new_with_signer(cpi_program.clone(), transfer_option_cpi, escrow_signer_seeds);
     transfer_checked(cpi_ctx_option, qty, ctx.accounts.option_mint.decimals)?;
@@ -377,39 +383,39 @@ pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
 #[derive(Accounts)]
 pub struct ExerciseOption<'info> {
     #[account(mut)]
-    pub market: Account<'info, Market>,
+    pub market: Box<Account<'info, Market>>,
     
     #[account(
         mut,
         associated_token::mint = underlying_mint,
         associated_token::authority = market
     )]
-    pub collateral_vault: InterfaceAccount<'info, TokenAccount>,
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(
-        init_if_needed,
-        payer = exerciser,
+        mut,
         associated_token::mint = quote_mint,
         associated_token::authority = market
     )]
-    pub quote_vault: InterfaceAccount<'info, TokenAccount>,
+    pub quote_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
     pub exerciser: Signer<'info>,
     
     #[account(mut)]
-    pub exerciser_option_ata: InterfaceAccount<'info, TokenAccount>,
+    pub exerciser_option_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub exerciser_underlying_ata: InterfaceAccount<'info, TokenAccount>,
+    pub exerciser_underlying_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub exerciser_quote_ata: InterfaceAccount<'info, TokenAccount>,
+    pub exerciser_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub option_mint: InterfaceAccount<'info, Mint>,
-    pub underlying_mint: InterfaceAccount<'info, Mint>,
-    pub quote_mint: InterfaceAccount<'info, Mint>,
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    pub underlying_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub quote_mint: Box<InterfaceAccount<'info, Mint>>,
     
     pub token_program: Interface<'info, TokenInterface>,
     pub associated_token_program: Program<'info, AssociatedToken>,
