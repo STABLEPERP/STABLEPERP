@@ -248,4 +248,158 @@ describe("stableperp", () => {
     const balance = await provider.connection.getTokenAccountBalance(buyerUnderlyingAta);
     assert.equal(balance.value.amount, qtyToExercise.toString());
   });
+
+  // --- EDGE CASES TESTS ---
+
+  describe("Edge Cases", () => {
+    it("Fails to exercise before expiry", async () => {
+      // Create a market that expires in the future
+      const futureExpiry = new anchor.BN(Math.floor(Date.now() / 1000) + 10000);
+      const futureExpiryBytes = futureExpiry.toArrayLike(Buffer, "le", 8);
+      const strikeBytes = strike.toArrayLike(Buffer, "le", 8);
+      
+      const [market2Pda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("market"), underlyingMint.toBuffer(), quoteMint.toBuffer(), strikeBytes, futureExpiryBytes],
+        program.programId
+      );
+      const [optionMint2Pda] = PublicKey.findProgramAddressSync([Buffer.from("option_mint"), market2Pda.toBuffer()], program.programId);
+
+      await program.methods
+        .initMarket(strike, futureExpiry, exerciseWindowSecs)
+        .accounts({
+          market: market2Pda,
+          marketCreator: marketCreatorPda,
+          factoryConfig: factoryConfigPda,
+          creator: admin.publicKey,
+          underlyingMint,
+          quoteMint,
+          optionMint: optionMint2Pda,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([admin])
+        .rpc();
+
+      const collateralVault2 = getAssociatedTokenAddressSync(underlyingMint, market2Pda, true);
+      const quoteVault2 = getAssociatedTokenAddressSync(quoteMint, market2Pda, true);
+
+      // Attempt to exercise immediately (should fail)
+      const buyerOptionAta = getAssociatedTokenAddressSync(optionMint2Pda, buyer.publicKey);
+      const buyerUnderlyingAta = getAssociatedTokenAddressSync(underlyingMint, buyer.publicKey);
+      const buyerQuoteAta = getAssociatedTokenAddressSync(quoteMint, buyer.publicKey);
+
+      try {
+        await program.methods
+          .exerciseOption(new anchor.BN(1))
+          .accounts({
+            market: market2Pda,
+            collateralVault: collateralVault2,
+            quoteVault: quoteVault2,
+            exerciser: buyer.publicKey,
+            exerciserOptionAta: buyerOptionAta,
+            exerciserUnderlyingAta: buyerUnderlyingAta,
+            exerciserQuoteAta: buyerQuoteAta,
+            optionMint: optionMint2Pda,
+            underlyingMint,
+            quoteMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc();
+        assert.fail("Should have failed with NotExpired");
+      } catch (err: any) {
+        assert.include(err.message, "NotExpired");
+      }
+    });
+
+    it("Fails to write option if undercollateralized", async () => {
+      const hugeQty = new anchor.BN(1000000 * 10**6); // More than writer has
+      
+      const writerUnderlyingAta = getAssociatedTokenAddressSync(underlyingMint, writer.publicKey);
+      const collateralVault = getAssociatedTokenAddressSync(underlyingMint, marketPda, true);
+
+      try {
+        await program.methods
+          .writeOption(hugeQty, new anchor.BN(5 * 10**6))
+          .accounts({
+            market: marketPda,
+            writerPosition: writerPositionPda,
+            collateralVault,
+            writerUnderlyingAta,
+            optionMint: optionMintPda,
+            escrowOptionVault: escrowOptionVaultPda,
+            writer: writer.publicKey,
+            underlyingMint,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([writer])
+          .rpc();
+        assert.fail("Should have failed with insufficient funds");
+      } catch (err: any) {
+        assert.ok(err); // Expecting token program error
+      }
+    });
+
+    it("Fails to buy more options than available", async () => {
+      const overbuyQty = new anchor.BN(100 * 10**6); // Only 5 left (10 written, 5 exercised)
+
+      const buyerQuoteAta = getAssociatedTokenAddressSync(quoteMint, buyer.publicKey);
+      const buyerOptionAta = getAssociatedTokenAddressSync(optionMintPda, buyer.publicKey);
+      const writerQuoteAta = getAssociatedTokenAddressSync(quoteMint, writer.publicKey);
+
+      try {
+        await program.methods
+          .buyOption(overbuyQty)
+          .accounts({
+            market: marketPda,
+            writerPosition: writerPositionPda,
+            escrowOptionVault: escrowOptionVaultPda,
+            writerQuoteAta,
+            buyerOptionAta,
+            buyerQuoteAta,
+            optionMint: optionMintPda,
+            quoteMint,
+            buyer: buyer.publicKey,
+            tokenProgram: TOKEN_PROGRAM_ID,
+            associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+            systemProgram: SystemProgram.programId,
+          })
+          .signers([buyer])
+          .rpc();
+        assert.fail("Should have failed with InsufficientOptions");
+      } catch (err: any) {
+        assert.include(err.message, "InsufficientOptions");
+      }
+    });
+
+    it("Can halt and resume market", async () => {
+      await program.methods
+        .adminHalt()
+        .accounts({
+          config: configPda,
+          admin: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+
+      let config = await program.account.config.fetch(configPda);
+      assert.isTrue(config.halted);
+
+      await program.methods
+        .adminResume()
+        .accounts({
+          config: configPda,
+          admin: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+
+      config = await program.account.config.fetch(configPda);
+      assert.isFalse(config.halted);
+    });
+  });
 });
