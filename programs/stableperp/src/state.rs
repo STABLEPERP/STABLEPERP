@@ -23,11 +23,13 @@ pub struct Market {
     pub exercise_window_secs: i64,
     pub option_mint: Pubkey,
     pub bump: u8,
+    pub split_numerator: u64,
+    pub split_denominator: u64,
 }
 
 impl Market {
-    // 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 32 + 1
-    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 8 + 32 + 1;
+    // 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8
+    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8;
 }
 
 #[account]

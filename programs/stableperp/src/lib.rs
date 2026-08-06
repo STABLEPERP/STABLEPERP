@@ -66,4 +66,12 @@ pub mod stableperp {
     pub fn admin_resume(ctx: Context<AdminHalt>) -> Result<()> {
         handle_admin_resume(ctx)
     }
+
+    pub fn corporate_action_split(
+        ctx: Context<CorporateActionSplit>,
+        numerator: u64,
+        denominator: u64,
+    ) -> Result<()> {
+        handle_corporate_action_split(ctx, numerator, denominator)
+    }
 }

@@ -401,5 +401,63 @@ describe("stableperp", () => {
       config = await program.account.config.fetch(configPda);
       assert.isFalse(config.halted);
     });
+
+    it("Handles corporate action (Stock Split 4:1)", async () => {
+      // 1. Admin triggers 4:1 split on market
+      await program.methods
+        .corporateActionSplit(new anchor.BN(4), new anchor.BN(1))
+        .accounts({
+          market: marketPda,
+          config: configPda,
+          admin: admin.publicKey,
+        })
+        .signers([admin])
+        .rpc();
+
+      const market = await program.account.market.fetch(marketPda);
+      assert.ok(market.splitNumerator.eq(new anchor.BN(4)));
+      assert.ok(market.splitDenominator.eq(new anchor.BN(1)));
+
+      // 2. Issuer airdrops extra collateral to Vault (simulating real world 4x balance)
+      // Original qty in vault was 10, now should be 40. We add 30.
+      await mintMockTokens(provider, underlyingMint, admin, marketPda, 30 * 10**6);
+
+      // 3. Let's exercise the remaining 5 option tokens
+      const remainingQtyToExercise = new anchor.BN(5 * 10**6);
+      
+      const buyerOptionAta = getAssociatedTokenAddressSync(optionMintPda, buyer.publicKey);
+      const buyerQuoteAta = getAssociatedTokenAddressSync(quoteMint, buyer.publicKey);
+      const buyerUnderlyingAta = getAssociatedTokenAddressSync(underlyingMint, buyer.publicKey);
+      const collateralVault = getAssociatedTokenAddressSync(underlyingMint, marketPda, true);
+      const quoteVault = getAssociatedTokenAddressSync(quoteMint, marketPda, true);
+
+      const beforeBalance = await provider.connection.getTokenAccountBalance(buyerUnderlyingAta);
+      
+      await program.methods
+        .exerciseOption(remainingQtyToExercise)
+        .accounts({
+          market: marketPda,
+          collateralVault,
+          quoteVault,
+          exerciser: buyer.publicKey,
+          exerciserOptionAta: buyerOptionAta,
+          exerciserUnderlyingAta: buyerUnderlyingAta,
+          exerciserQuoteAta: buyerQuoteAta,
+          optionMint: optionMintPda,
+          underlyingMint,
+          quoteMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([buyer])
+        .rpc();
+
+      const afterBalance = await provider.connection.getTokenAccountBalance(buyerUnderlyingAta);
+      const diff = Number(afterBalance.value.amount) - Number(beforeBalance.value.amount);
+      
+      // The user exercised 5 option tokens. Because of 4:1 split, they should get 20 underlying tokens.
+      assert.equal(diff, 20 * 10**6);
+    });
   });
 });

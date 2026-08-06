@@ -158,6 +158,30 @@ pub fn handle_init_market(
     market.exercise_window_secs = exercise_window_secs;
     market.option_mint = ctx.accounts.option_mint.key();
     market.bump = ctx.bumps.market;
+    market.split_numerator = 1;
+    market.split_denominator = 1;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct CorporateActionSplit<'info> {
+    #[account(mut)]
+    pub market: Account<'info, Market>,
+    
+    #[account(seeds = [b"config"], bump, has_one = admin)]
+    pub config: Account<'info, Config>,
+    
+    pub admin: Signer<'info>,
+}
+
+pub fn handle_corporate_action_split(
+    ctx: Context<CorporateActionSplit>,
+    numerator: u64,
+    denominator: u64,
+) -> Result<()> {
+    let market = &mut ctx.accounts.market;
+    market.split_numerator = numerator;
+    market.split_denominator = denominator;
     Ok(())
 }
 
@@ -445,7 +469,14 @@ pub fn handle_exercise(ctx: Context<ExerciseOption>, qty: u64) -> Result<()> {
         authority: ctx.accounts.market.to_account_info(),
     };
     let cpi_ctx_underlying = CpiContext::new_with_signer(cpi_program.clone(), transfer_underlying_cpi, signer_seeds);
-    transfer_checked(cpi_ctx_underlying, qty, ctx.accounts.underlying_mint.decimals)?;
+    
+    let underlying_qty = (qty as u128)
+        .checked_mul(market.split_numerator as u128)
+        .unwrap()
+        .checked_div(market.split_denominator as u128)
+        .unwrap() as u64;
+
+    transfer_checked(cpi_ctx_underlying, underlying_qty, ctx.accounts.underlying_mint.decimals)?;
 
     Ok(())
 }
