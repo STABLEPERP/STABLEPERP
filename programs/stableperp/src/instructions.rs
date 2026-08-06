@@ -15,6 +15,8 @@ pub enum ErrorCode {
     NotWithinExerciseWindow,
     #[msg("Option has not expired yet.")]
     NotExpired,
+    #[msg("Factory is not active.")]
+    FactoryNotActive,
 }
 
 use anchor_spl::{
@@ -54,29 +56,80 @@ pub fn handle_init_config(
 }
 
 #[derive(Accounts)]
+pub struct InitFactory<'info> {
+    #[account(
+        init,
+        payer = admin,
+        space = FactoryConfig::LEN,
+        seeds = [b"factory_config"],
+        bump
+    )]
+    pub factory_config: Account<'info, FactoryConfig>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handle_init_factory(ctx: Context<InitFactory>, creation_fee: u64) -> Result<()> {
+    let factory_config = &mut ctx.accounts.factory_config;
+    factory_config.admin = ctx.accounts.admin.key();
+    factory_config.creation_fee = creation_fee;
+    factory_config.is_active = true;
+    Ok(())
+}
+
+#[derive(Accounts)]
+#[instruction(creator: Pubkey)]
+pub struct AddCreatorAllowlist<'info> {
+    #[account(
+        init,
+        payer = admin,
+        space = MarketCreator::LEN,
+        seeds = [b"market_creator", creator.as_ref()],
+        bump
+    )]
+    pub market_creator: Account<'info, MarketCreator>,
+    #[account(seeds = [b"factory_config"], bump, has_one = admin)]
+    pub factory_config: Account<'info, FactoryConfig>,
+    #[account(mut)]
+    pub admin: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handle_add_creator_allowlist(ctx: Context<AddCreatorAllowlist>, creator: Pubkey) -> Result<()> {
+    let market_creator = &mut ctx.accounts.market_creator;
+    market_creator.authority = creator;
+    market_creator.bump = ctx.bumps.market_creator;
+    Ok(())
+}
+
+#[derive(Accounts)]
 #[instruction(strike: u64, expiry_ts: i64)]
 pub struct InitMarket<'info> {
     #[account(
         init,
-        payer = admin,
+        payer = creator,
         space = Market::LEN,
         seeds = [b"market", underlying_mint.key().as_ref(), quote_mint.key().as_ref(), &strike.to_le_bytes(), &expiry_ts.to_le_bytes()],
         bump
     )]
     pub market: Account<'info, Market>,
     
-    #[account(seeds = [b"config"], bump, has_one = admin)]
-    pub config: Account<'info, Config>,
+    #[account(seeds = [b"market_creator", creator.key().as_ref()], bump)]
+    pub market_creator: Account<'info, MarketCreator>,
+    
+    #[account(seeds = [b"factory_config"], bump)]
+    pub factory_config: Account<'info, FactoryConfig>,
     
     #[account(mut)]
-    pub admin: Signer<'info>,
+    pub creator: Signer<'info>,
     
     pub underlying_mint: InterfaceAccount<'info, Mint>,
     pub quote_mint: InterfaceAccount<'info, Mint>,
     
     #[account(
         init,
-        payer = admin,
+        payer = creator,
         seeds = [b"option_mint", market.key().as_ref()],
         bump,
         mint::decimals = underlying_mint.decimals,
@@ -95,6 +148,8 @@ pub fn handle_init_market(
     expiry_ts: i64,
     exercise_window_secs: i64,
 ) -> Result<()> {
+    require!(ctx.accounts.factory_config.is_active, ErrorCode::FactoryNotActive);
+    
     let market = &mut ctx.accounts.market;
     market.underlying_mint = ctx.accounts.underlying_mint.key();
     market.quote_mint = ctx.accounts.quote_mint.key();

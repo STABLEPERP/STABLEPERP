@@ -28,6 +28,8 @@ describe("stableperp", () => {
 
   // PDAs
   let configPda: PublicKey;
+  let factoryConfigPda: PublicKey;
+  let marketCreatorPda: PublicKey;
   let marketPda: PublicKey;
   let optionMintPda: PublicKey;
   let writerPositionPda: PublicKey;
@@ -57,6 +59,8 @@ describe("stableperp", () => {
     expiryTs = new anchor.BN(now - 10); // Expiry in the past so we can exercise immediately
     
     [configPda] = PublicKey.findProgramAddressSync([Buffer.from("config")], program.programId);
+    [factoryConfigPda] = PublicKey.findProgramAddressSync([Buffer.from("factory_config")], program.programId);
+    [marketCreatorPda] = PublicKey.findProgramAddressSync([Buffer.from("market_creator"), admin.publicKey.toBuffer()], program.programId);
     
     const strikeBytes = strike.toArrayLike(Buffer, "le", 8);
     const expiryBytes = expiryTs.toArrayLike(Buffer, "le", 8);
@@ -90,13 +94,46 @@ describe("stableperp", () => {
     assert.ok(config.admin.equals(admin.publicKey));
   });
 
+  it("Initializes factory", async () => {
+    const creationFee = new anchor.BN(10 * 10**6); // 10 USDC
+    await program.methods
+      .initFactory(creationFee)
+      .accounts({
+        factoryConfig: factoryConfigPda,
+        admin: admin.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([admin])
+      .rpc();
+    
+    const factory = await program.account.factoryConfig.fetch(factoryConfigPda);
+    assert.ok(factory.isActive);
+  });
+
+  it("Adds creator to allowlist", async () => {
+    await program.methods
+      .addCreatorAllowlist(admin.publicKey) // We allow 'admin' to create markets
+      .accounts({
+        marketCreator: marketCreatorPda,
+        factoryConfig: factoryConfigPda,
+        admin: admin.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([admin])
+      .rpc();
+      
+    const creator = await program.account.marketCreator.fetch(marketCreatorPda);
+    assert.ok(creator.authority.equals(admin.publicKey));
+  });
+
   it("Initializes market", async () => {
     await program.methods
       .initMarket(strike, expiryTs, exerciseWindowSecs)
       .accounts({
         market: marketPda,
-        config: configPda,
-        admin: admin.publicKey,
+        marketCreator: marketCreatorPda,
+        factoryConfig: factoryConfigPda,
+        creator: admin.publicKey,
         underlyingMint,
         quoteMint,
         optionMint: optionMintPda,

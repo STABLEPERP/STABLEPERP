@@ -45,3 +45,26 @@ impl WriterPosition {
     // 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 8 + 1
     pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 1;
 }
+
+#[account]
+pub struct FactoryConfig {
+    pub admin: Pubkey,
+    pub creation_fee: u64,
+    pub is_active: bool,
+}
+
+impl FactoryConfig {
+    // 8 (discriminator) + 32 + 8 + 1
+    pub const LEN: usize = 8 + 32 + 8 + 1;
+}
+
+#[account]
+pub struct MarketCreator {
+    pub authority: Pubkey,
+    pub bump: u8,
+}
+
+impl MarketCreator {
+    // 8 (discriminator) + 32 + 1
+    pub const LEN: usize = 8 + 32 + 1;
+}

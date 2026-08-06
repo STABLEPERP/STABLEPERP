@@ -20,6 +20,14 @@ pub mod stableperp {
         handle_init_config(ctx, fee_bps, treasury, buyback_wallet)
     }
 
+    pub fn init_factory(ctx: Context<InitFactory>, creation_fee: u64) -> Result<()> {
+        handle_init_factory(ctx, creation_fee)
+    }
+
+    pub fn add_creator_allowlist(ctx: Context<AddCreatorAllowlist>, creator: Pubkey) -> Result<()> {
+        handle_add_creator_allowlist(ctx, creator)
+    }
+
     pub fn init_market(
         ctx: Context<InitMarket>,
         strike: u64,
