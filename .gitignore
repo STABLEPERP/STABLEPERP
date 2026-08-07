@@ -7,3 +7,15 @@ test-ledger
 .yarn
 .env
 /scripts
+*keypair*.json
+deployer*.json
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env.*
+
+# OS
+.DS_Store

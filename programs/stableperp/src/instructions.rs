@@ -245,7 +245,7 @@ pub struct WriteOption<'info> {
 }
 
 pub fn handle_write_option(ctx: Context<WriteOption>, qty: u64, premium_ask: u64) -> Result<()> {
-    require!(!ctx.accounts.market.strike == 0, ErrorCode::MarketHalted); // Dummy check, replace with actual config halt check if passed
+    require!(ctx.accounts.market.strike != 0, ErrorCode::MarketHalted); // Dummy check, replace with actual config halt check if passed
     
     // 1. Transfer xStock (underlying) from writer to vault
     let transfer_cpi_accounts = TransferChecked {
@@ -307,7 +307,7 @@ pub struct BuyOption<'info> {
     pub escrow_option_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub buyer_underlying_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub writer_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(
         mut,
@@ -320,10 +320,10 @@ pub struct BuyOption<'info> {
     pub buyer_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
     
     #[account(mut)]
-    pub writer_quote_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
     
     #[account(mut)]
-    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub quote_mint: Box<InterfaceAccount<'info, Mint>>,
     
     #[account(mut)]
     pub buyer: Signer<'info>,
@@ -347,7 +347,7 @@ pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
     // 1. Transfer Quote (USDC) from buyer to writer
     let transfer_quote_cpi = TransferChecked {
         from: ctx.accounts.buyer_quote_ata.to_account_info(),
-        mint: ctx.accounts.option_mint.to_account_info(), // Assuming mint is quote_mint in real scenario, this matches struct
+        mint: ctx.accounts.quote_mint.to_account_info(),
         to: ctx.accounts.writer_quote_ata.to_account_info(),
         authority: ctx.accounts.buyer.to_account_info(),
     };
@@ -442,7 +442,7 @@ pub fn handle_exercise(ctx: Context<ExerciseOption>, qty: u64) -> Result<()> {
     let cpi_ctx_burn = CpiContext::new(cpi_program.clone(), burn_cpi);
     burn(cpi_ctx_burn, qty)?;
 
-    // 2. Transfer Quote (USDC) from exerciser to quote_vault
+    // 1. Transfer Quote (USDC) from Buyer to Writer
     let transfer_quote_cpi = TransferChecked {
         from: ctx.accounts.exerciser_quote_ata.to_account_info(),
         mint: ctx.accounts.quote_mint.to_account_info(),
