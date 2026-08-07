@@ -338,9 +338,13 @@ pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
     let available_qty = position.minted_amount.checked_sub(position.filled_amount).unwrap();
     require!(available_qty >= qty, ErrorCode::InsufficientOptions);
     
-    // Simplification for MVP: Assuming premium_ask is the total price per whole token, ignoring decimals matching for now.
-    // In production, we'd scale based on token decimals.
-    let total_cost = (qty as u128).checked_mul(position.premium_ask as u128).unwrap() as u64;
+    // Since qty is in 10^9 units and premium_ask is already in 10^6 USDC units for 1 whole Option:
+    // total_cost = (qty * premium_ask) / 10^9
+    let total_cost = ((qty as u128)
+        .checked_mul(position.premium_ask as u128)
+        .unwrap()
+        .checked_div(1_000_000_000)
+        .unwrap()) as u64;
 
     let cpi_program = ctx.accounts.token_program.to_account_info();
 
@@ -429,7 +433,13 @@ pub fn handle_exercise(ctx: Context<ExerciseOption>, qty: u64) -> Result<()> {
     require!(current_time >= market.expiry_ts, ErrorCode::NotExpired);
     require!(current_time <= market.expiry_ts + market.exercise_window_secs, ErrorCode::NotWithinExerciseWindow);
     
-    let total_cost = (qty as u128).checked_mul(market.strike as u128).unwrap() as u64;
+    // qty is in 10^9, strike is raw (e.g. 155). We need cost in 10^6 USDC:
+    // cost = (qty * strike * 10^6) / 10^9 = (qty * strike) / 1000
+    let total_cost = ((qty as u128)
+        .checked_mul(market.strike as u128)
+        .unwrap()
+        .checked_div(1000)
+        .unwrap()) as u64;
 
     let cpi_program = ctx.accounts.token_program.to_account_info();
 
