@@ -158,6 +158,8 @@ pub fn handle_init_market(
     strike: u64,
     expiry_ts: i64,
     exercise_window_secs: i64,
+    is_synthetic: bool,
+    payout_cap: u64,
 ) -> Result<()> {
     require!(ctx.accounts.factory_config.is_active, ErrorCode::FactoryNotActive);
     
@@ -171,6 +173,9 @@ pub fn handle_init_market(
     market.bump = ctx.bumps.market;
     market.split_numerator = 1;
     market.split_denominator = 1;
+    market.is_synthetic = is_synthetic;
+    market.payout_cap = payout_cap;
+    market.settlement_price = 0;
     Ok(())
 }
 
@@ -247,7 +252,14 @@ pub struct WriteOption<'info> {
 pub fn handle_write_option(ctx: Context<WriteOption>, qty: u64, premium_ask: u64) -> Result<()> {
     require!(ctx.accounts.market.strike != 0, ErrorCode::MarketHalted); // Dummy check, replace with actual config halt check if passed
     
-    // 1. Transfer xStock (underlying) from writer to vault
+    // 1. Transfer collateral from writer to vault
+    let collateral_amount = if ctx.accounts.market.is_synthetic {
+        let dec = 10u128.pow(ctx.accounts.underlying_mint.decimals as u32);
+        (((qty as u128) * (ctx.accounts.market.payout_cap as u128)) / dec) as u64
+    } else {
+        qty
+    };
+
     let transfer_cpi_accounts = TransferChecked {
         from: ctx.accounts.writer_underlying_ata.to_account_info(),
         mint: ctx.accounts.underlying_mint.to_account_info(),
@@ -256,7 +268,7 @@ pub fn handle_write_option(ctx: Context<WriteOption>, qty: u64, premium_ask: u64
     };
     let cpi_program = ctx.accounts.token_program.to_account_info();
     let cpi_ctx = CpiContext::new(cpi_program.clone(), transfer_cpi_accounts);
-    transfer_checked(cpi_ctx, qty, ctx.accounts.underlying_mint.decimals)?;
+    transfer_checked(cpi_ctx, collateral_amount, ctx.accounts.underlying_mint.decimals)?;
 
     // 2. Mint OptionTokens to escrow vault
     let market_key = ctx.accounts.market.key();
@@ -283,7 +295,7 @@ pub fn handle_write_option(ctx: Context<WriteOption>, qty: u64, premium_ask: u64
     let position = &mut ctx.accounts.writer_position;
     position.market = market_key;
     position.writer = ctx.accounts.writer.key();
-    position.locked_amount = position.locked_amount.checked_add(qty).unwrap();
+    position.locked_amount = position.locked_amount.checked_add(collateral_amount).unwrap();
     position.minted_amount = position.minted_amount.checked_add(qty).unwrap();
     position.premium_ask = premium_ask; // Allows updating the premium ask
     position.bump = ctx.bumps.writer_position;
@@ -452,15 +464,17 @@ pub fn handle_exercise(ctx: Context<ExerciseOption>, qty: u64) -> Result<()> {
     let cpi_ctx_burn = CpiContext::new(cpi_program.clone(), burn_cpi);
     burn(cpi_ctx_burn, qty)?;
 
-    // 1. Transfer Quote (USDC) from Buyer to Writer
-    let transfer_quote_cpi = TransferChecked {
-        from: ctx.accounts.exerciser_quote_ata.to_account_info(),
-        mint: ctx.accounts.quote_mint.to_account_info(),
-        to: ctx.accounts.quote_vault.to_account_info(),
-        authority: ctx.accounts.exerciser.to_account_info(),
-    };
-    let cpi_ctx_quote = CpiContext::new(cpi_program.clone(), transfer_quote_cpi);
-    transfer_checked(cpi_ctx_quote, total_cost, ctx.accounts.quote_mint.decimals)?;
+    // 2. Transfer Quote (USDC) from Buyer to Writer
+    if !market.is_synthetic {
+        let transfer_quote_cpi = TransferChecked {
+            from: ctx.accounts.exerciser_quote_ata.to_account_info(),
+            mint: ctx.accounts.quote_mint.to_account_info(),
+            to: ctx.accounts.quote_vault.to_account_info(),
+            authority: ctx.accounts.exerciser.to_account_info(),
+        };
+        let cpi_ctx_quote = CpiContext::new(cpi_program.clone(), transfer_quote_cpi);
+        transfer_checked(cpi_ctx_quote, total_cost, ctx.accounts.quote_mint.decimals)?;
+    }
 
     // 3. Transfer Underlying (xStock) from collateral_vault to exerciser
     let market_key = market.underlying_mint;
@@ -478,21 +492,33 @@ pub fn handle_exercise(ctx: Context<ExerciseOption>, qty: u64) -> Result<()> {
     ];
     let signer_seeds = &[&seeds[..]];
 
-    let transfer_underlying_cpi = TransferChecked {
-        from: ctx.accounts.collateral_vault.to_account_info(),
-        mint: ctx.accounts.underlying_mint.to_account_info(),
-        to: ctx.accounts.exerciser_underlying_ata.to_account_info(),
-        authority: ctx.accounts.market.to_account_info(),
+    let payout_amount = if market.is_synthetic {
+        if market.settlement_price > market.strike {
+            let profit = market.settlement_price.saturating_sub(market.strike);
+            let capped_profit = std::cmp::min(market.payout_cap, profit);
+            let dec = 10u128.pow(ctx.accounts.underlying_mint.decimals as u32);
+            (((qty as u128) * (capped_profit as u128)) / dec) as u64
+        } else {
+            0
+        }
+    } else {
+        (qty as u128)
+            .checked_mul(market.split_numerator as u128)
+            .unwrap()
+            .checked_div(market.split_denominator as u128)
+            .unwrap() as u64
     };
-    let cpi_ctx_underlying = CpiContext::new_with_signer(cpi_program.clone(), transfer_underlying_cpi, signer_seeds);
-    
-    let underlying_qty = (qty as u128)
-        .checked_mul(market.split_numerator as u128)
-        .unwrap()
-        .checked_div(market.split_denominator as u128)
-        .unwrap() as u64;
 
-    transfer_checked(cpi_ctx_underlying, underlying_qty, ctx.accounts.underlying_mint.decimals)?;
+    if payout_amount > 0 {
+        let transfer_underlying_cpi = TransferChecked {
+            from: ctx.accounts.collateral_vault.to_account_info(),
+            mint: ctx.accounts.underlying_mint.to_account_info(),
+            to: ctx.accounts.exerciser_underlying_ata.to_account_info(),
+            authority: ctx.accounts.market.to_account_info(),
+        };
+        let cpi_ctx_underlying = CpiContext::new_with_signer(cpi_program.clone(), transfer_underlying_cpi, signer_seeds);
+        transfer_checked(cpi_ctx_underlying, payout_amount, ctx.accounts.underlying_mint.decimals)?;
+    }
 
     Ok(())
 }

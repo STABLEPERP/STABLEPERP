@@ -33,8 +33,10 @@ pub mod stableperp {
         strike: u64,
         expiry_ts: i64,
         exercise_window_secs: i64,
+        is_synthetic: bool,
+        payout_cap: u64,
     ) -> Result<()> {
-        handle_init_market(ctx, strike, expiry_ts, exercise_window_secs)
+        handle_init_market(ctx, strike, expiry_ts, exercise_window_secs, is_synthetic, payout_cap)
     }
 
     pub fn write_option(

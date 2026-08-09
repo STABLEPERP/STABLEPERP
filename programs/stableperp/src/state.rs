@@ -25,11 +25,14 @@ pub struct Market {
     pub bump: u8,
     pub split_numerator: u64,
     pub split_denominator: u64,
+    pub is_synthetic: bool,
+    pub payout_cap: u64,
+    pub settlement_price: u64, // 0 if not settled
 }
 
 impl Market {
-    // 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8
-    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8;
+    // 8 (discriminator) + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8 + 1 + 8 + 8
+    pub const LEN: usize = 8 + 32 + 32 + 8 + 8 + 8 + 32 + 1 + 8 + 8 + 1 + 8 + 8;
 }
 
 #[account]
