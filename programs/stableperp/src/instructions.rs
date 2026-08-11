@@ -211,7 +211,7 @@ pub struct WriteOption<'info> {
     pub market: Box<Account<'info, Market>>,
     
     #[account(
-        init,
+        init_if_needed,
         payer = writer,
         space = WriterPosition::LEN,
         seeds = [b"writer", market.key().as_ref(), writer.key().as_ref()],
