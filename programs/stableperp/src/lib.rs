@@ -5,7 +5,7 @@ pub mod instructions;
 
 use instructions::*;
 
-declare_id!("7rubqTecWv5gDjwhiajw3tr7gfwZcDJvPvoZnBnr9uit");
+declare_id!("D2pAeo437UfwD7jALV8rDB5fpHJJBt5GzDeDka8485mS");
 
 #[program]
 pub mod stableperp {
@@ -75,5 +75,9 @@ pub mod stableperp {
         denominator: u64,
     ) -> Result<()> {
         handle_corporate_action_split(ctx, numerator, denominator)
+    }
+
+    pub fn reclaim_collateral(ctx: Context<ReclaimCollateral>) -> Result<()> {
+        handle_reclaim_collateral(ctx)
     }
 }

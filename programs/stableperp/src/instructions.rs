@@ -17,6 +17,10 @@ pub enum ErrorCode {
     NotExpired,
     #[msg("Factory is not active.")]
     FactoryNotActive,
+    #[msg("No unsold options to reclaim.")]
+    NoUnsoldOptions,
+    #[msg("Self trading is not allowed on mainnet.")]
+    CannotTradeWithSelf,
 }
 
 
@@ -346,16 +350,22 @@ pub struct BuyOption<'info> {
 }
 
 pub fn handle_buy_option(ctx: Context<BuyOption>, qty: u64) -> Result<()> {
+    // Dynamic Mainnet Check: If USDC is the official mainnet USDC, block wash trading
+    let mainnet_usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".parse::<Pubkey>().unwrap();
+    if ctx.accounts.quote_mint.key() == mainnet_usdc {
+        require!(ctx.accounts.buyer.key() != ctx.accounts.writer_position.writer, ErrorCode::CannotTradeWithSelf);
+    }
+
     let position = &mut ctx.accounts.writer_position;
     let available_qty = position.minted_amount.checked_sub(position.filled_amount).unwrap();
     require!(available_qty >= qty, ErrorCode::InsufficientOptions);
     
-    // Since qty is in 10^9 units and premium_ask is already in 10^6 USDC units for 1 whole Option:
-    // total_cost = (qty * premium_ask) / 10^9
+    // Since qty is in 10^6 units and premium_ask is already in 10^6 USDC units for 1 whole Option:
+    // total_cost = (qty * premium_ask) / 10^6
     let total_cost = ((qty as u128)
         .checked_mul(position.premium_ask as u128)
         .unwrap()
-        .checked_div(1_000_000_000)
+        .checked_div(1_000_000)
         .unwrap()) as u64;
 
     let cpi_program = ctx.accounts.token_program.to_account_info();
@@ -537,6 +547,115 @@ pub fn handle_admin_halt(ctx: Context<AdminHalt>) -> Result<()> {
 
 pub fn handle_admin_resume(ctx: Context<AdminHalt>) -> Result<()> {
     ctx.accounts.config.halted = false;
+    Ok(())
+}
+
+#[derive(Accounts)]
+pub struct ReclaimCollateral<'info> {
+    #[account(mut)]
+    pub market: Box<Account<'info, Market>>,
+    
+    #[account(
+        mut,
+        has_one = market,
+        has_one = writer,
+    )]
+    pub writer_position: Box<Account<'info, WriterPosition>>,
+    
+    #[account(
+        mut,
+        associated_token::mint = underlying_mint,
+        associated_token::authority = market
+    )]
+    pub collateral_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut)]
+    pub writer_underlying_ata: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(
+        mut,
+        associated_token::mint = option_mint,
+        associated_token::authority = writer_position
+    )]
+    pub escrow_option_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    
+    #[account(mut)]
+    pub option_mint: Box<InterfaceAccount<'info, Mint>>,
+    
+    #[account(mut)]
+    pub writer: Signer<'info>,
+    
+    pub underlying_mint: Box<InterfaceAccount<'info, Mint>>,
+    pub token_program: Interface<'info, TokenInterface>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+pub fn handle_reclaim_collateral(ctx: Context<ReclaimCollateral>) -> Result<()> {
+    let position = &mut ctx.accounts.writer_position;
+    
+    // Unsold options in the escrow vault
+    let unsold_qty = position.minted_amount.checked_sub(position.filled_amount).unwrap();
+    require!(unsold_qty > 0, ErrorCode::NoUnsoldOptions);
+    
+    let collateral_to_return = if ctx.accounts.market.is_synthetic {
+        let dec = 10u128.pow(ctx.accounts.underlying_mint.decimals as u32);
+        (((unsold_qty as u128) * (ctx.accounts.market.payout_cap as u128)) / dec) as u64
+    } else {
+        unsold_qty
+    };
+
+    let cpi_program = ctx.accounts.token_program.to_account_info();
+
+    // 1. Burn the unsold options from the escrow vault
+    let writer_key = position.writer;
+    let market_key = position.market;
+    let position_bump = position.bump;
+    let escrow_seeds = &[
+        b"writer",
+        market_key.as_ref(),
+        writer_key.as_ref(),
+        &[position_bump],
+    ];
+    let escrow_signer_seeds = &[&escrow_seeds[..]];
+
+    let burn_cpi = Burn {
+        mint: ctx.accounts.option_mint.to_account_info(),
+        from: ctx.accounts.escrow_option_vault.to_account_info(),
+        authority: position.to_account_info(),
+    };
+    let cpi_ctx_burn = CpiContext::new_with_signer(cpi_program.clone(), burn_cpi, escrow_signer_seeds);
+    burn(cpi_ctx_burn, unsold_qty)?;
+
+    // 2. Transfer collateral back to the writer
+    let market_key_val = ctx.accounts.market.underlying_mint;
+    let quote_key = ctx.accounts.market.quote_mint;
+    let strike = ctx.accounts.market.strike;
+    let expiry = ctx.accounts.market.expiry_ts;
+    let market_bump = ctx.accounts.market.bump;
+    let market_seeds = &[
+        b"market",
+        market_key_val.as_ref(),
+        quote_key.as_ref(),
+        &strike.to_le_bytes(),
+        &expiry.to_le_bytes(),
+        &[market_bump],
+    ];
+    let market_signer_seeds = &[&market_seeds[..]];
+
+    let transfer_cpi = TransferChecked {
+        from: ctx.accounts.collateral_vault.to_account_info(),
+        mint: ctx.accounts.underlying_mint.to_account_info(),
+        to: ctx.accounts.writer_underlying_ata.to_account_info(),
+        authority: ctx.accounts.market.to_account_info(),
+    };
+    let cpi_ctx_transfer = CpiContext::new_with_signer(cpi_program.clone(), transfer_cpi, market_signer_seeds);
+    transfer_checked(cpi_ctx_transfer, collateral_to_return, ctx.accounts.underlying_mint.decimals)?;
+
+    // 3. Update the writer position
+    position.minted_amount = position.minted_amount.checked_sub(unsold_qty).unwrap();
+    position.locked_amount = position.locked_amount.checked_sub(collateral_to_return).unwrap();
+
     Ok(())
 }
 
